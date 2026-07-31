@@ -16,7 +16,7 @@ MODEL_NS="${RHOAI_MODEL_NAMESPACE:-demo-sandbox}"
 MODEL_DEPLOYMENT_NAME="${RHOAI_QWEN27B_DEPLOYMENT_NAME:-qwen3-6-27b-fp8}"
 MAAS_NS="${RHOAI_MAAS_NAMESPACE:-models-as-a-service}"
 MAAS_QWEN27B_MODEL_NAME="${RHOAI_MAAS_QWEN27B_MODEL_NAME:-qwen3-6-27b}"
-MODEL_DISPLAY_NAME="${RHOAI_QWEN27B_DISPLAY_NAME:-Qwen27B-3-Nano-30B-A3B-FP8}"
+MODEL_DISPLAY_NAME="${RHOAI_QWEN27B_DISPLAY_NAME:-Qwen3.6-27B-FP8}"
 # Must match deploy.sh's default (v3.0 = the modelcar :3.0 tag); a stale
 # "Version 1" default here made the version + artifact metadata checks fail
 # against a correctly-registered model version.
