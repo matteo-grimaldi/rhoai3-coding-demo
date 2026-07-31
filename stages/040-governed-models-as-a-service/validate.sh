@@ -31,6 +31,8 @@ OPENAI_PROVIDER_SECRET="${RHOAI_OPENAI_PROVIDER_SECRET:-openai-provider-api-key}
 OPENAI_ACCESS_RESOURCE="${RHOAI_OPENAI_ACCESS_RESOURCE:-personal-kube-admin}"
 QWEN27B_MODEL_RESOURCE="${RHOAI_MAAS_QWEN27B_MODEL_NAME:-qwen3-6-27b}"
 DIRECT_QWEN27B_NAME="${RHOAI_QWEN27B_DEPLOYMENT_NAME:-qwen3-6-27b-fp8}"
+NEMOTRON_MODEL_RESOURCE="${RHOAI_MAAS_NEMOTRON_MODEL_NAME:-nemotron-3-nano-30b-a3b}"
+DIRECT_NEMOTRON_NAME="${RHOAI_NEMOTRON_DEPLOYMENT_NAME:-nvidia-nemotron-3-nano-30b-a3b}"
 PROJECT_NS="${RHOAI_DEMO_PROJECT_NAMESPACE:-demo-sandbox}"
 PLAYGROUND_LSD_NAME="${RHOAI_PLAYGROUND_LSD_NAME:-lsd-genai-playground}"
 PLAYGROUND_CONFIGMAP="${RHOAI_PLAYGROUND_CONFIGMAP:-llama-stack-config}"
@@ -48,6 +50,7 @@ PLAYGROUND_VLLM_MAX_TOKENS="${RHOAI_PLAYGROUND_VLLM_MAX_TOKENS:-512}"
 # from Llama Stack /v1/models instead of assuming provider order.
 PLAYGROUND_GPT_PROVIDER="${RHOAI_PLAYGROUND_GPT_PROVIDER_ID:-maas-vllm-inference-1}"
 PLAYGROUND_QWEN27B_PROVIDER="${RHOAI_PLAYGROUND_QWEN27B_PROVIDER_ID:-maas-vllm-inference-2}"
+PLAYGROUND_NEMOTRON_PROVIDER="${RHOAI_PLAYGROUND_NEMOTRON_PROVIDER_ID:-maas-vllm-inference-3}"
 
 TMP_FILES=()
 cleanup() {
@@ -181,7 +184,7 @@ body_contains_model() {
   local body_file="$1"
   local model
 
-  for model in "$OPENAI_MODEL_RESOURCE" "$OPENAI_MODEL_ID" "$QWEN27B_MODEL_RESOURCE"; do
+  for model in "$OPENAI_MODEL_RESOURCE" "$OPENAI_MODEL_ID" "$QWEN27B_MODEL_RESOURCE" "$NEMOTRON_MODEL_RESOURCE"; do
     if grep -Fq "$model" "$body_file"; then
       return 0
     fi
@@ -337,7 +340,9 @@ validate_playground_if_present() {
     if grep -q "base_url: https://${GATEWAY_HOST}/models-as-a-service/${OPENAI_MODEL_RESOURCE}/v1" "$config_file" &&
       grep -q "model_id: ${OPENAI_MODEL_ID}" "$config_file" &&
       grep -q "base_url: https://${GATEWAY_HOST}/models-as-a-service/${QWEN27B_MODEL_RESOURCE}/v1" "$config_file" &&
-      grep -q "provider_model_id: ${QWEN27B_MODEL_RESOURCE}" "$config_file"; then
+      grep -q "provider_model_id: ${QWEN27B_MODEL_RESOURCE}" "$config_file" &&
+      grep -q "base_url: https://${GATEWAY_HOST}/models-as-a-service/${NEMOTRON_MODEL_RESOURCE}/v1" "$config_file" &&
+      grep -q "provider_model_id: ${NEMOTRON_MODEL_RESOURCE}" "$config_file"; then
       result="pass"
     else
       result="missing MaaS base URL or model mapping"
@@ -355,7 +360,7 @@ import urllib.request
 with urllib.request.urlopen('http://127.0.0.1:8321/v1/models', timeout=60) as resp:
     data = json.loads(resp.read())
 items = data.get('data', [])
-targets = {'${QWEN27B_MODEL_RESOURCE}', '${OPENAI_MODEL_ID}'}
+targets = {'${QWEN27B_MODEL_RESOURCE}', '${NEMOTRON_MODEL_RESOURCE}', '${OPENAI_MODEL_ID}'}
 seen = set()
 for item in items:
     model_id = item.get('identifier') or item.get('id') or ''
@@ -384,6 +389,7 @@ import urllib.request
 
 models = [
     ('qwen27b', '${QWEN27B_MODEL_RESOURCE}'),
+    ('nemotron', '${NEMOTRON_MODEL_RESOURCE}'),
     ('openai', '${OPENAI_MODEL_ID}'),
 ]
 
@@ -422,18 +428,18 @@ for label, target in models:
     except Exception as exc:
         print(f'FAIL {label}: {exc!r}')
 " 2>&1 || true)
-    if grep -q "OK qwen27b" <<<"$output" && grep -q "OK openai" <<<"$output"; then
-      check "Gen AI Playground Responses API works for MaaS Qwen27B and GPT" "pass"
+    if grep -q "OK qwen27b" <<<"$output" && grep -q "OK nemotron" <<<"$output" && grep -q "OK openai" <<<"$output"; then
+      check "Gen AI Playground Responses API works for MaaS Qwen27B, Nemotron and GPT" "pass"
     elif grep -q "FAIL" <<<"$output" &&
       grep -qi "Too Many Requests" <<<"$output"; then
-      warn "Gen AI Playground Responses API works for MaaS Qwen27B and GPT" \
+      warn "Gen AI Playground Responses API works for MaaS Qwen27B, Nemotron and GPT" \
         "MaaS policy or external provider throttled inference: ${output//$'\n'/ }"
     else
-      check "Gen AI Playground Responses API works for MaaS Qwen27B and GPT" \
+      check "Gen AI Playground Responses API works for MaaS Qwen27B, Nemotron and GPT" \
         "responses=${output//$'\n'/ }"
     fi
   else
-    check "Gen AI Playground Responses API works for MaaS Qwen27B and GPT" "deployment missing"
+    check "Gen AI Playground Responses API works for MaaS Qwen27B, Nemotron and GPT" "deployment missing"
   fi
 
   if resource_exists "deployment/rhods-dashboard" "redhat-ods-applications"; then
@@ -488,6 +494,7 @@ with urllib.request.urlopen('http://127.0.0.1:8321/v1/models', timeout=60) as re
 
 targets = {
     'qwen27b': '${QWEN27B_MODEL_RESOURCE}',
+    'nemotron': '${NEMOTRON_MODEL_RESOURCE}',
     'openai': '${OPENAI_MODEL_ID}',
 }
 resolved = {}
@@ -578,9 +585,9 @@ PY
     result="dashboard deployment missing"
   fi
   if [[ "$result" == warn:* ]]; then
-    warn "Gen AI Playground dashboard BFF works for MaaS Qwen27B and GPT" "${result#warn: }"
+    warn "Gen AI Playground dashboard BFF works for MaaS Qwen27B, Nemotron and GPT" "${result#warn: }"
   else
-    check "Gen AI Playground dashboard BFF works for MaaS Qwen27B and GPT" "$result"
+    check "Gen AI Playground dashboard BFF works for MaaS Qwen27B, Nemotron and GPT" "$result"
   fi
 }
 
@@ -896,6 +903,26 @@ else
 fi
 check "no stale demo-sandbox Qwen27B LLMInferenceService remains" "$R"
 
+if resource_exists "inferenceservice/${DIRECT_NEMOTRON_NAME}" "$PROJECT_NS"; then
+  R="direct InferenceService still exists in ${PROJECT_NS}"
+else
+  R="pass"
+fi
+check "direct demo-sandbox Nemotron deployment has been removed" "$R"
+
+STALE_NEMOTRON_LLMIS=""
+for stale_llmis_name in "$NEMOTRON_MODEL_RESOURCE" "$DIRECT_NEMOTRON_NAME"; do
+  if resource_exists "llminferenceservice/${stale_llmis_name}" "$PROJECT_NS"; then
+    STALE_NEMOTRON_LLMIS="${STALE_NEMOTRON_LLMIS} ${stale_llmis_name}"
+  fi
+done
+if [[ -z "$STALE_NEMOTRON_LLMIS" ]]; then
+  R="pass"
+else
+  R="stale LLMInferenceService still exists in ${PROJECT_NS}:${STALE_NEMOTRON_LLMIS}"
+fi
+check "no stale demo-sandbox Nemotron LLMInferenceService remains" "$R"
+
 if resource_exists "localqueue/lq-gpu-reserved-demo" "$MAAS_NS"; then
   LQ_CLUSTER_QUEUE=$(jsonpath "localqueue/lq-gpu-reserved-demo" "$MAAS_NS" "{.spec.clusterQueue}")
   [[ "$LQ_CLUSTER_QUEUE" == "cq-gpu-reserved-demo" ]] && R="pass" || R="clusterQueue=${LQ_CLUSTER_QUEUE:-missing}"
@@ -927,6 +954,29 @@ else
 fi
 check "MaaSModelRef points to the local Qwen27B LLMInferenceService" "$R"
 
+if resource_exists "llminferenceservices.serving.kserve.io/${NEMOTRON_MODEL_RESOURCE}" "$MAAS_NS"; then
+  NEMOTRON_URI=$(jsonpath_nonempty "llminferenceservices.serving.kserve.io/${NEMOTRON_MODEL_RESOURCE}" "$MAAS_NS" "{.spec.model.uri}")
+  NEMOTRON_READY=$(jsonpath_nonempty "llminferenceservices.serving.kserve.io/${NEMOTRON_MODEL_RESOURCE}" "$MAAS_NS" "{.status.conditions[?(@.type==\"Ready\")].status}")
+  if [[ "$NEMOTRON_URI" == "oci://registry.redhat.io/rhai/modelcar-nvidia-nemotron-3-nano-30b-a3b-fp8:3.0" &&
+    "$NEMOTRON_READY" == "True" ]]; then
+    R="pass"
+  else
+    R="uri=${NEMOTRON_URI:-missing},ready=${NEMOTRON_READY:-missing}"
+  fi
+else
+  R="missing"
+fi
+check "local Nemotron LLMInferenceService is ready in MaaS namespace" "$R"
+
+NEMOTRON_MODELREF_KIND=$(jsonpath "maasmodelrefs.maas.opendatahub.io/${NEMOTRON_MODEL_RESOURCE}" "$MAAS_NS" "{.spec.modelRef.kind}")
+NEMOTRON_MODELREF_NAME=$(jsonpath "maasmodelrefs.maas.opendatahub.io/${NEMOTRON_MODEL_RESOURCE}" "$MAAS_NS" "{.spec.modelRef.name}")
+if [[ "$NEMOTRON_MODELREF_KIND" == "LLMInferenceService" && "$NEMOTRON_MODELREF_NAME" == "$NEMOTRON_MODEL_RESOURCE" ]]; then
+  R="pass"
+else
+  R="kind=${NEMOTRON_MODELREF_KIND:-missing},name=${NEMOTRON_MODELREF_NAME:-missing}"
+fi
+check "MaaSModelRef points to the local Nemotron LLMInferenceService" "$R"
+
 for ext_model in gpt-4o-mini:api.openai.com:openai-provider-api-key; do
   IFS=: read -r EXT_NAME EXT_ENDPOINT EXT_SECRET <<< "$ext_model"
   EXT_PROVIDER=$(jsonpath "externalmodels.maas.opendatahub.io/${EXT_NAME}" "$MAAS_NS" "{.spec.provider}")
@@ -953,14 +1003,16 @@ done
 DS_SUB="devspaces-coding-models"
 DS_MODELS=$(jsonpath "maassubscriptions.maas.opendatahub.io/${DS_SUB}" "$MAAS_NS" "{.spec.modelRefs[*].name}")
 DS_QWEN27B_LIMIT=$(jsonpath "maassubscriptions.maas.opendatahub.io/${DS_SUB}" "$MAAS_NS" "{.spec.modelRefs[?(@.name==\"qwen3-6-27b\")].tokenRateLimits[0].limit}")
+DS_NEMOTRON_LIMIT=$(jsonpath "maassubscriptions.maas.opendatahub.io/${DS_SUB}" "$MAAS_NS" "{.spec.modelRefs[?(@.name==\"nemotron-3-nano-30b-a3b\")].tokenRateLimits[0].limit}")
 if contains_word "$DS_MODELS" "qwen3-6-27b" &&
+  contains_word "$DS_MODELS" "nemotron-3-nano-30b-a3b" &&
   ! contains_word "$DS_MODELS" "gpt-4o-mini" &&
-  [[ "$DS_QWEN27B_LIMIT" == "5000000" ]]; then
+  [[ "$DS_QWEN27B_LIMIT" == "20000000" && "$DS_NEMOTRON_LIMIT" == "20000000" ]]; then
   R="pass"
 else
-  R="models=${DS_MODELS:-missing},qwen27b=${DS_QWEN27B_LIMIT:-missing}"
+  R="models=${DS_MODELS:-missing},qwen27b=${DS_QWEN27B_LIMIT:-missing},nemotron=${DS_NEMOTRON_LIMIT:-missing}"
 fi
-check "devspaces-coding-models subscription has the local coding model @5M/1h (qwen3-6-27b, no gpt-4o-mini)" "$R"
+check "devspaces-coding-models subscription has local coding models @20M/1h (qwen3-6-27b + nemotron, no gpt-4o-mini)" "$R"
 
 PK_SUB="personal-kube-admin"
 PK_PRIORITY=$(jsonpath "maassubscriptions.maas.opendatahub.io/${PK_SUB}" "$MAAS_NS" "{.spec.priority}")
@@ -968,6 +1020,7 @@ PK_GPT_LIMIT=$(jsonpath "maassubscriptions.maas.opendatahub.io/${PK_SUB}" "$MAAS
 PK_MODELS=$(jsonpath "maassubscriptions.maas.opendatahub.io/${PK_SUB}" "$MAAS_NS" "{.spec.modelRefs[*].name}")
 if contains_word "$PK_MODELS" "gpt-4o-mini" &&
   contains_word "$PK_MODELS" "qwen3-6-27b" &&
+  contains_word "$PK_MODELS" "nemotron-3-nano-30b-a3b" &&
   [[ "$PK_GPT_LIMIT" == "100000" && "$PK_PRIORITY" == "150" ]]; then
   R="pass"
 else
@@ -981,6 +1034,7 @@ AUTH_ORG=$(jsonpath "maasauthpolicies.maas.opendatahub.io/${OPENAI_ACCESS_RESOUR
 if contains_word "$AUTH_SUBJECT_USERS" "kube:admin" &&
   contains_word "$AUTH_MODELS" "$OPENAI_MODEL_RESOURCE" &&
   contains_word "$AUTH_MODELS" "$QWEN27B_MODEL_RESOURCE" &&
+  contains_word "$AUTH_MODELS" "$NEMOTRON_MODEL_RESOURCE" &&
   [[ "$AUTH_ORG" == "rhoai3-coding-demo" ]]; then
   R="pass"
 else
@@ -1001,8 +1055,10 @@ GATEWAY_LOG_ERRORS=$(oc logs -n openshift-ingress \
   || true)
 OPENAI_AUTH_ENFORCED=$(jsonpath "authpolicy/maas-auth-gpt-4o-mini" "$MAAS_NS" "{.status.conditions[?(@.type==\"Enforced\")].status}")
 QWEN27B_AUTH_ENFORCED=$(jsonpath "authpolicy/maas-auth-qwen3-6-27b" "$MAAS_NS" "{.status.conditions[?(@.type==\"Enforced\")].status}")
+NEMOTRON_AUTH_ENFORCED=$(jsonpath "authpolicy/maas-auth-nemotron-3-nano-30b-a3b" "$MAAS_NS" "{.status.conditions[?(@.type==\"Enforced\")].status}")
 OPENAI_TRLP_ENFORCED=$(jsonpath "tokenratelimitpolicy/maas-trlp-gpt-4o-mini" "$MAAS_NS" "{.status.conditions[?(@.type==\"Enforced\")].status}")
 QWEN27B_TRLP_ENFORCED=$(jsonpath "tokenratelimitpolicy/maas-trlp-qwen3-6-27b" "$MAAS_NS" "{.status.conditions[?(@.type==\"Enforced\")].status}")
+NEMOTRON_TRLP_ENFORCED=$(jsonpath "tokenratelimitpolicy/maas-trlp-nemotron-3-nano-30b-a3b" "$MAAS_NS" "{.status.conditions[?(@.type==\"Enforced\")].status}")
 if [[ -n "$GATEWAY_LOG_ERRORS" ]]; then
   R="gateway Envoy log reports recent generated filter rejection"
 elif ! contains_word "$GATEWAY_READY" "True"; then
@@ -1012,9 +1068,11 @@ elif ! grep -q 'kuadrant-auth-maas-default-gateway' <<<"$GATEWAY_FILTERS" ||
   R="generated Kuadrant auth/rate-limit EnvoyFilters missing"
 elif [[ "$OPENAI_AUTH_ENFORCED" != "True" ||
   "$QWEN27B_AUTH_ENFORCED" != "True" ||
+  "$NEMOTRON_AUTH_ENFORCED" != "True" ||
   "$OPENAI_TRLP_ENFORCED" != "True" ||
-  "$QWEN27B_TRLP_ENFORCED" != "True" ]]; then
-  R="policy enforcement openaiAuth=${OPENAI_AUTH_ENFORCED:-missing},qwen27bAuth=${QWEN27B_AUTH_ENFORCED:-missing},openaiLimit=${OPENAI_TRLP_ENFORCED:-missing},qwen27bLimit=${QWEN27B_TRLP_ENFORCED:-missing}"
+  "$QWEN27B_TRLP_ENFORCED" != "True" ||
+  "$NEMOTRON_TRLP_ENFORCED" != "True" ]]; then
+  R="policy enforcement openaiAuth=${OPENAI_AUTH_ENFORCED:-missing},qwen27bAuth=${QWEN27B_AUTH_ENFORCED:-missing},nemotronAuth=${NEMOTRON_AUTH_ENFORCED:-missing},openaiLimit=${OPENAI_TRLP_ENFORCED:-missing},qwen27bLimit=${QWEN27B_TRLP_ENFORCED:-missing},nemotronLimit=${NEMOTRON_TRLP_ENFORCED:-missing}"
 else
   R="pass"
 fi
