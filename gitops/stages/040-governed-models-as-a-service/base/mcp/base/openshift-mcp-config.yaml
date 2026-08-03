@@ -21,7 +21,8 @@ data:
     enabled_tools = [
       "pods_list_in_namespace",
       "pods_get",
-      "nodes_top"
+      "nodes_top",
+      "pods_log"
     ]
     disabled_tools = [
       "namespaces_list",
@@ -34,7 +35,7 @@ data:
       "resources_scale",
       "nodes_log"
     ]
-    server_instructions = "Use this read-only OpenShift MCP server for bounded namespace-scoped pod inspection, known-pod status, and node usage summaries. Do not request cluster-wide namespace or pod listings, events, logs, secrets, configmaps, RBAC objects, or write actions."
+    server_instructions = "Use this read-only OpenShift MCP server for bounded namespace-scoped pod inspection, known-pod status, pod log retrieval, and node usage summaries. Do not request cluster-wide namespace or pod listings, events, secrets, configmaps, RBAC objects, or write actions."
 
     [http]
     read_header_timeout = "10s"
