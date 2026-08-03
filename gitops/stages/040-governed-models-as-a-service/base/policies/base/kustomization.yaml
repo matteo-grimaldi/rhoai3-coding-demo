@@ -7,3 +7,5 @@ resources:
   - developer-hub-models-access.yaml
   - ai-safety-guardrails-access.yaml
   - model-evaluation-access.yaml
+  - nemotron-api-key-provisioner-access.yaml
+  - nemotron-api-key-provisioning.yaml

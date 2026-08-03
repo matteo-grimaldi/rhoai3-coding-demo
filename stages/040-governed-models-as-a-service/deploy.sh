@@ -534,6 +534,22 @@ wait_for_jsonpath "MaaS Nemotron LLMInferenceService readiness" \
   "{.status.conditions[?(@.type==\"Ready\")].status}" "True" \
   "${RHOAI_STAGE220_NEMOTRON_READY_ATTEMPTS:-180}"
 
+echo "── Waiting for Nemotron API key provisioning Job ──"
+if oc wait --for=condition=complete job/provision-nemotron-api-key -n "$MAAS_NS" \
+  --timeout=300s --insecure-skip-tls-verify=true 2>/dev/null; then
+  NEMOTRON_KEY=$(oc get secret nemotron-api-key -n "$MAAS_NS" \
+    -o jsonpath='{.data.api-key}' --insecure-skip-tls-verify=true 2>/dev/null \
+    | base64 --decode 2>/dev/null || true)
+  if [[ -n "$NEMOTRON_KEY" ]]; then
+    echo "✓ Nemotron API key provisioned (secret ${MAAS_NS}/nemotron-api-key)"
+    echo "  Retrieve with: oc get secret nemotron-api-key -n ${MAAS_NS} -o jsonpath='{.data.api-key}' | base64 -d"
+  else
+    echo "! Nemotron API key Job completed but secret is empty"
+  fi
+else
+  echo "! Nemotron API key provisioning Job did not complete within 5 minutes"
+fi
+
 if oc get deployment/maas-api -n redhat-ods-applications \
   --insecure-skip-tls-verify=true >/dev/null 2>&1; then
   echo "── Restarting maas-api to pick up maas-db-config ──"

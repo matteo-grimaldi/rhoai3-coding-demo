@@ -1042,6 +1042,79 @@ else
 fi
 check "personal-kube-admin auth policy covers local and external models" "$R"
 
+NEMOTRON_KEY_SUB="nemotron-api-key-provisioner"
+NEMOTRON_KEY_SUB_MODELS=$(jsonpath "maassubscriptions.maas.opendatahub.io/${NEMOTRON_KEY_SUB}" "$MAAS_NS" "{.spec.modelRefs[*].name}")
+NEMOTRON_KEY_SUB_LIMIT=$(jsonpath "maassubscriptions.maas.opendatahub.io/${NEMOTRON_KEY_SUB}" "$MAAS_NS" "{.spec.modelRefs[?(@.name==\"nemotron-3-nano-30b-a3b\")].tokenRateLimits[0].limit}")
+if contains_word "$NEMOTRON_KEY_SUB_MODELS" "nemotron-3-nano-30b-a3b" &&
+  [[ "$NEMOTRON_KEY_SUB_LIMIT" == "20000000" ]]; then
+  R="pass"
+else
+  R="models=${NEMOTRON_KEY_SUB_MODELS:-missing},limit=${NEMOTRON_KEY_SUB_LIMIT:-missing}"
+fi
+check "nemotron-api-key-provisioner subscription has nemotron @20M/1h" "$R"
+
+NEMOTRON_KEY_AUTH_USERS=$(jsonpath "maasauthpolicies.maas.opendatahub.io/${NEMOTRON_KEY_SUB}" "$MAAS_NS" "{.spec.subjects.users[*]}")
+NEMOTRON_KEY_AUTH_MODELS=$(jsonpath "maasauthpolicies.maas.opendatahub.io/${NEMOTRON_KEY_SUB}" "$MAAS_NS" "{.spec.modelRefs[*].name}")
+if contains_word "$NEMOTRON_KEY_AUTH_USERS" "system:serviceaccount:models-as-a-service:nemotron-api-key-provisioner" &&
+  contains_word "$NEMOTRON_KEY_AUTH_MODELS" "nemotron-3-nano-30b-a3b"; then
+  R="pass"
+else
+  R="users=${NEMOTRON_KEY_AUTH_USERS:-missing},models=${NEMOTRON_KEY_AUTH_MODELS:-missing}"
+fi
+check "nemotron-api-key-provisioner auth policy covers nemotron for the provisioner SA" "$R"
+
+if resource_exists "secret/nemotron-api-key" "$MAAS_NS"; then
+  NEMOTRON_STANDALONE_KEY=$(oc get secret nemotron-api-key -n "$MAAS_NS" \
+    -o jsonpath='{.data.api-key}' --insecure-skip-tls-verify=true 2>/dev/null \
+    | base64 --decode 2>/dev/null || true)
+  if [[ "$NEMOTRON_STANDALONE_KEY" == sk-oai-* ]]; then
+    R="pass"
+  else
+    R="api-key data is missing or not a valid sk-oai- key"
+  fi
+else
+  R="missing"
+fi
+check "Nemotron standalone API key Secret is present with a valid key" "$R"
+
+if [[ "${NEMOTRON_STANDALONE_KEY:-}" == sk-oai-* ]] && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  NEMOTRON_STANDALONE_BODY=$(mktemp "${TMPDIR:-/tmp}/rhoai-stage220-nemotron-standalone.XXXXXX")
+  TMP_FILES+=("$NEMOTRON_STANDALONE_BODY")
+  NEMOTRON_STANDALONE_STATUS=$(curl -sk --max-time 120 -o "$NEMOTRON_STANDALONE_BODY" -w '%{http_code}' \
+    -H "Authorization: Bearer ${NEMOTRON_STANDALONE_KEY}" \
+    -H "Content-Type: application/json" \
+    "https://${GATEWAY_HOST}/models-as-a-service/${NEMOTRON_MODEL_RESOURCE}/v1/chat/completions" \
+    --data-binary @- <<JSON 2>/dev/null || true
+{
+  "model": "${NEMOTRON_MODEL_RESOURCE}",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with exactly: nemotron-api-key-ok"
+    }
+  ],
+  "max_tokens": 32,
+  "temperature": 0,
+  "chat_template_kwargs": {"enable_thinking": false}
+}
+JSON
+)
+  if [[ "$NEMOTRON_STANDALONE_STATUS" == "200" ]] &&
+    jq -e '(.usage.total_tokens // 0) > 0' "$NEMOTRON_STANDALONE_BODY" >/dev/null 2>&1; then
+    R="pass"
+  elif [[ "$NEMOTRON_STANDALONE_STATUS" == "429" ]] &&
+    grep -qi "Too Many Requests" "$NEMOTRON_STANDALONE_BODY"; then
+    R="warn: MaaS policy throttled Nemotron standalone key validation: status=${NEMOTRON_STANDALONE_STATUS}"
+  else
+    R="status=${NEMOTRON_STANDALONE_STATUS:-missing},body=$(head -c 180 "$NEMOTRON_STANDALONE_BODY" | tr '\n' ' ')"
+  fi
+  if [[ "$R" == warn:* ]]; then
+    warn "Nemotron standalone API key can call inference through MaaS" "${R#warn: }"
+  else
+    check "Nemotron standalone API key can call inference through MaaS" "$R"
+  fi
+fi
+
 GATEWAY_FILTERS=$(oc get envoyfilter -n openshift-ingress -o name \
   --insecure-skip-tls-verify=true 2>/dev/null || true)
 GATEWAY_READY=$(oc get pods -n openshift-ingress \
@@ -1326,14 +1399,10 @@ if command -v python3 >/dev/null 2>&1; then
       }
     }
   ],
-  "tool_choice": {
-    "type": "function",
-    "function": {
-      "name": "get_weather"
-    }
-  },
-  "max_tokens": 128,
-  "temperature": 0
+  "tool_choice": "auto",
+  "max_tokens": 256,
+  "temperature": 0,
+  "chat_template_kwargs": {"enable_thinking": false}
 }
 JSON
 )

@@ -1,0 +1,57 @@
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: nemotron-api-key-provisioner
+  namespace: models-as-a-service
+  labels:
+    app.kubernetes.io/name: nemotron-api-key-provisioner
+    app.kubernetes.io/component: maas-subscription
+    demo.rhoai.io/provider: governed-models
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  owner:
+    users:
+      - system:serviceaccount:models-as-a-service:nemotron-api-key-provisioner
+  modelRefs:
+    - name: nemotron-3-nano-30b-a3b
+      namespace: models-as-a-service
+      tokenRateLimits:
+        - limit: 20000000
+          window: 1h
+  priority: 100
+  tokenMetadata:
+    organizationId: rhoai3-coding-demo
+    costCenter: ai-platform
+    labels:
+      environment: demo
+      provider: governed-models
+      modelSet: nemotron-api-key
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSAuthPolicy
+metadata:
+  name: nemotron-api-key-provisioner
+  namespace: models-as-a-service
+  labels:
+    app.kubernetes.io/name: nemotron-api-key-provisioner
+    app.kubernetes.io/component: maas-auth-policy
+    demo.rhoai.io/provider: governed-models
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  subjects:
+    users:
+      - system:serviceaccount:models-as-a-service:nemotron-api-key-provisioner
+  modelRefs:
+    - name: nemotron-3-nano-30b-a3b
+      namespace: models-as-a-service
+  meteringMetadata:
+    organizationId: rhoai3-coding-demo
+    costCenter: ai-platform
+    labels:
+      environment: demo
+      provider: governed-models
+      modelSet: nemotron-api-key

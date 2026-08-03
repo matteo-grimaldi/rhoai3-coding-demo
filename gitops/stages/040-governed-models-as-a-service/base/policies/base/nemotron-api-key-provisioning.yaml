@@ -1,0 +1,209 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nemotron-api-key-provisioner
+  namespace: models-as-a-service
+  annotations:
+    argocd.argoproj.io/sync-wave: "17"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nemotron-api-key-secret-manager
+  namespace: models-as-a-service
+  annotations:
+    argocd.argoproj.io/sync-wave: "17"
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+      - get
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nemotron-api-key-provisioner-secret-manager
+  namespace: models-as-a-service
+  annotations:
+    argocd.argoproj.io/sync-wave: "17"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nemotron-api-key-secret-manager
+subjects:
+  - kind: ServiceAccount
+    name: nemotron-api-key-provisioner
+    namespace: models-as-a-service
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nemotron-api-key-gateway-reader
+  namespace: openshift-ingress
+  annotations:
+    argocd.argoproj.io/sync-wave: "17"
+rules:
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - gateways
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nemotron-api-key-provisioner-gateway-reader
+  namespace: openshift-ingress
+  annotations:
+    argocd.argoproj.io/sync-wave: "17"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nemotron-api-key-gateway-reader
+subjects:
+  - kind: ServiceAccount
+    name: nemotron-api-key-provisioner
+    namespace: models-as-a-service
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: provision-nemotron-api-key
+  namespace: models-as-a-service
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: nemotron-api-key-provisioner
+      containers:
+        - name: provision
+          image: registry.redhat.io/openshift4/ose-cli
+          command:
+            - /bin/bash
+            - -ceu
+            - |
+              SECRET_NAME="nemotron-api-key"
+              SECRET_NAMESPACE="models-as-a-service"
+              SUBSCRIPTION="nemotron-api-key-provisioner"
+              KEY_NAME="nemotron-standalone"
+              SA_PRINCIPAL="system:serviceaccount:models-as-a-service:nemotron-api-key-provisioner"
+              MAAS_HOST="$(oc get gateway maas-default-gateway -n openshift-ingress -o jsonpath='{.spec.listeners[0].hostname}')"
+
+              if [ -z "${MAAS_HOST}" ] || echo "${MAAS_HOST}" | grep -q "placeholder"; then
+                echo "ERROR: MaaS Gateway hostname is not ready"
+                exit 1
+              fi
+
+              MAAS_BASE_URL="https://${MAAS_HOST}"
+              SA_TOKEN="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+
+              secret_value() {
+                local key="$1"
+                oc get secret "${SECRET_NAME}" -n "${SECRET_NAMESPACE}" \
+                  -o "jsonpath={.data.${key}}" 2>/dev/null | base64 -d 2>/dev/null || true
+              }
+
+              validate_subscription() {
+                local key="$1"
+                local payload
+                payload="$(mktemp)"
+                python3 -c 'import json,sys; print(json.dumps({"key": sys.argv[1]}))' "${key}" > "${payload}"
+                curl -sk -X POST \
+                  -H "Content-Type: application/json" \
+                  --data-binary "@${payload}" \
+                  "https://maas-api.redhat-ods-applications.svc.cluster.local:8443/internal/v1/api-keys/validate" \
+                  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("subscription",""))' 2>/dev/null || true
+                rm -f "${payload}"
+              }
+
+              current_key="$(secret_value api-key)"
+              current_id="$(secret_value api-key-id)"
+              current_subscription=""
+              if [ -n "${current_key}" ]; then
+                current_subscription="$(validate_subscription "${current_key}")"
+              fi
+
+              if [ "${current_subscription}" = "${SUBSCRIPTION}" ]; then
+                echo "Existing Nemotron API key is valid for subscription ${SUBSCRIPTION}"
+                echo "Key stored in secret ${SECRET_NAMESPACE}/${SECRET_NAME}"
+                exit 0
+              fi
+
+              if [ -n "${current_id}" ]; then
+                ds=$(curl -sk --retry 3 --retry-delay 3 -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H "Authorization: Bearer ${SA_TOKEN}" \
+                  "${MAAS_BASE_URL}/maas-api/v1/api-keys/${current_id}")
+                if [ "${ds}" -ge 200 ] && [ "${ds}" -lt 300 ]; then
+                  echo "Revoked old key ${current_id}"
+                else
+                  echo "WARNING: failed to revoke old key ${current_id}, HTTP ${ds}"
+                fi
+              fi
+
+              response="$(mktemp)"
+              curl -sk -X POST \
+                -H "Authorization: Bearer ${SA_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\":\"${KEY_NAME}\",\"subscription\":\"${SUBSCRIPTION}\"}" \
+                "${MAAS_BASE_URL}/maas-api/v1/api-keys" > "${response}"
+
+              key="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("key",""))' "${response}" 2>/dev/null || true)"
+              id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id",""))' "${response}" 2>/dev/null || true)"
+              expires_at="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("expiresAt",""))' "${response}" 2>/dev/null || true)"
+              rm -f "${response}"
+
+              if [ -z "${key}" ] || ! echo "${key}" | grep -q '^sk-oai-'; then
+                echo "ERROR: MaaS API did not return a valid key"
+                exit 1
+              fi
+
+              SECRET_FILE="$(mktemp)"
+              chmod 600 "${SECRET_FILE}"
+              {
+                printf 'api-key=%s\n' "${key}"
+                printf 'api-key-id=%s\n' "${id}"
+                printf 'expires-at=%s\n' "${expires_at}"
+                printf 'maas-base-url=%s\n' "${MAAS_BASE_URL}"
+                printf 'model=nemotron-3-nano-30b-a3b\n'
+              } > "${SECRET_FILE}"
+
+              oc create secret generic "${SECRET_NAME}" \
+                -n "${SECRET_NAMESPACE}" \
+                --from-env-file="${SECRET_FILE}" \
+                --dry-run=client -o yaml | oc apply -f -
+              rm -f "${SECRET_FILE}"
+
+              # Clean up orphaned keys with the same name
+              search_response="$(curl -sk --retry 3 --retry-delay 3 -X POST \
+                -H "Authorization: Bearer ${SA_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\":\"${KEY_NAME}\"}" \
+                "${MAAS_BASE_URL}/maas-api/v1/api-keys/search" 2>/dev/null || echo "[]")"
+              orphan_ids="$(echo "${search_response}" | python3 -c 'import json,sys;data=json.load(sys.stdin).get("data",[]);[print(e["id"]) for e in data if e.get("name")==sys.argv[1] and e.get("username")==sys.argv[3] and e.get("status")=="active" and e.get("id","")!=sys.argv[2]]' "${KEY_NAME}" "${id}" "${SA_PRINCIPAL}" 2>/dev/null || true)"
+              if [ -n "${orphan_ids}" ]; then
+                while IFS= read -r orphan_id; do
+                  [ -z "${orphan_id}" ] && continue
+                  ds=$(curl -sk --retry 3 --retry-delay 3 -o /dev/null -w '%{http_code}' -X DELETE \
+                    -H "Authorization: Bearer ${SA_TOKEN}" \
+                    "${MAAS_BASE_URL}/maas-api/v1/api-keys/${orphan_id}")
+                  if [ "${ds}" -ge 200 ] && [ "${ds}" -lt 300 ]; then
+                    echo "Revoked orphaned key ${orphan_id}"
+                  else
+                    echo "WARNING: failed to revoke orphaned key ${orphan_id}, HTTP ${ds}"
+                  fi
+                done <<< "${orphan_ids}"
+              fi
+
+              echo "Nemotron API key provisioned and stored in secret ${SECRET_NAMESPACE}/${SECRET_NAME}"
+              echo "Retrieve with: oc get secret ${SECRET_NAME} -n ${SECRET_NAMESPACE} -o jsonpath='{.data.api-key}' | base64 -d"
